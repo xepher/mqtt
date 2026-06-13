@@ -1,0 +1,118 @@
+[sources.amqp_logs]
+type = "amqp"
+connection_string = "amqp://guest:guest@rabbitmq:5672/%2f"
+queue = "vector_logs_queue"
+decoding.codec = "json"
+
+[sources.amqp_metrics]
+type = "amqp"
+connection_string = "amqp://guest:guest@rabbitmq:5672/%2f"
+queue = "vector_metrics_queue"
+decoding.codec = "json"
+
+[sources.amqp_telemetry]
+type = "amqp"
+connection_string = "amqp://guest:guest@rabbitmq:5672/%2f"
+queue = "vector_telemetry_queue"
+decoding.codec = "json"
+
+# Transforms: Parse inner JSON payload for logs
+[transforms.parse_logs]
+type = "remap"
+inputs = ["amqp_logs"]
+source = """
+if exists(.payload) {
+  parsed, err = parse_json(string!(.payload))
+  if err == null {
+    . = merge!(., parsed)
+    del(.payload)
+  }
+}
+"""
+
+# Transforms: Parse inner JSON payload for metrics
+[transforms.parse_metrics]
+type = "remap"
+inputs = ["amqp_metrics"]
+source = """
+if exists(.payload) {
+  parsed, err = parse_json(string!(.payload))
+  if err == null {
+    . = merge!(., parsed)
+    del(.payload)
+  }
+}
+"""
+
+# Transforms: Parse inner JSON payload for telemetry
+[transforms.parse_telemetry]
+type = "remap"
+inputs = ["amqp_telemetry"]
+source = """
+if exists(.payload) {
+  parsed, err = parse_json(string!(.payload))
+  if err == null {
+    . = merge!(., parsed)
+    del(.payload)
+  }
+}
+"""
+
+# Transforms: Convert metrics logs to Prometheus metrics
+[transforms.metrics_to_prom]
+type = "log_to_metric"
+inputs = ["parse_metrics"]
+
+[[transforms.metrics_to_prom.metrics]]
+name = "device_cpu_usage"
+type = "gauge"
+field = "cpu_usage"
+tags.device_id = "{{device_id}}"
+
+[[transforms.metrics_to_prom.metrics]]
+name = "device_memory_usage"
+type = "gauge"
+field = "memory_usage"
+tags.device_id = "{{device_id}}"
+
+# Transforms: Convert numeric telemetry values to Prometheus metrics
+[transforms.telemetry_to_prom]
+type = "log_to_metric"
+inputs = ["parse_telemetry"]
+
+[[transforms.telemetry_to_prom.metrics]]
+name = "device_temperature"
+type = "gauge"
+field = "temperature"
+tags.device_id = "{{device_id}}"
+
+[[transforms.telemetry_to_prom.metrics]]
+name = "device_humidity"
+type = "gauge"
+field = "humidity"
+tags.device_id = "{{device_id}}"
+
+# Sinks: Export Prometheus metrics
+[sinks.prometheus_exporter]
+type = "prometheus_exporter"
+inputs = ["metrics_to_prom", "telemetry_to_prom"]
+address = "0.0.0.0:9090"
+
+# Sinks: Send Logs to Loki
+[sinks.loki_logs]
+type = "loki"
+inputs = ["parse_logs"]
+endpoint = "http://loki:3100"
+labels.device_id = "{{device_id}}"
+labels.log_level = "{{level}}"
+labels.source = "device_logs"
+encoding.codec = "json"
+
+# Sinks: Send Telemetry raw payload to Loki
+[sinks.loki_telemetry]
+type = "loki"
+inputs = ["parse_telemetry"]
+endpoint = "http://loki:3100"
+labels.device_id = "{{device_id}}"
+labels.source = "device_telemetry"
+encoding.codec = "json"

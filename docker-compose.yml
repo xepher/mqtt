@@ -1,0 +1,300 @@
+version: '3.8'
+
+networks:
+  iot_network:
+    driver: bridge
+    internal: true  # Completely isolated from host and other networks except Nginx
+  mqtt_network:
+    driver: bridge
+    internal: true
+  controller_network:
+    driver: bridge
+    internal: true
+  audit_network:
+    driver: bridge
+    internal: true
+  observability_network:
+    driver: bridge
+
+services:
+  nginx1:
+    image: nginx:latest
+    container_name: nginx1
+    hostname: nginx1
+    networks:
+      iot_network:
+        aliases:
+          - nginx
+      mqtt_network:
+        aliases:
+          - nginx
+      controller_network:
+        aliases:
+          - nginx
+    ports:
+      - "18083:18083" # EMQX Dashboard exposed to host
+      - "3001:80"     # Expose Nginx HTTP (OTA) to host for testing/verification
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - emqx1
+      - emqx2
+      - centralcontroller
+
+  nginx2:
+    image: nginx:latest
+    container_name: nginx2
+    hostname: nginx2
+    networks:
+      iot_network:
+        aliases:
+          - nginx
+      mqtt_network:
+        aliases:
+          - nginx
+      controller_network:
+        aliases:
+          - nginx
+    ports:
+      - "18084:18083" # EMQX Dashboard exposed to host
+      - "3002:80"     # Expose Nginx HTTP (OTA) to host for testing/verification
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - emqx1
+      - emqx2
+      - centralcontroller
+
+  emqx1:
+    image: emqx:5.7.0
+    container_name: emqx1
+    networks:
+      mqtt_network:
+        aliases:
+          - emqx1.mqtt_network
+    environment:
+      - EMQX_NODE__NAME=emqx@emqx1.mqtt_network
+      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
+      - EMQX_CLUSTER__STATIC__SEEDS=[emqx@emqx1.mqtt_network, emqx@emqx2.mqtt_network]
+      - EMQX_DASHBOARD__BOOTSTRAP_PASSWORD=admin123
+      - EMQX_API_KEY__BOOTSTRAP_FILE=/opt/emqx/etc/api_key.bootstrap
+    volumes:
+      - ./emqx/api_key.bootstrap:/opt/emqx/etc/api_key.bootstrap:ro
+
+  emqx2:
+    image: emqx:5.7.0
+    container_name: emqx2
+    networks:
+      mqtt_network:
+        aliases:
+          - emqx2.mqtt_network
+    environment:
+      - EMQX_NODE__NAME=emqx@emqx2.mqtt_network
+      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
+      - EMQX_CLUSTER__STATIC__SEEDS=[emqx@emqx1.mqtt_network, emqx@emqx2.mqtt_network]
+      - EMQX_DASHBOARD__BOOTSTRAP_PASSWORD=admin123
+      - EMQX_API_KEY__BOOTSTRAP_FILE=/opt/emqx/etc/api_key.bootstrap
+    volumes:
+      - ./emqx/api_key.bootstrap:/opt/emqx/etc/api_key.bootstrap:ro
+
+  rabbitmq1:
+    image: rabbitmq:3-management
+    container_name: rabbitmq1
+    hostname: rabbitmq1
+    networks:
+      mqtt_network:
+        aliases:
+          - rabbitmq
+      audit_network:
+        aliases:
+          - rabbitmq
+    ports:
+      - "15672:15672" # RabbitMQ Management exposed to host
+    environment:
+      - RABBITMQ_ERLANG_COOKIE=rabbitmqsecretcookie
+      - RABBITMQ_NODENAME=rabbit@rabbitmq1
+    volumes:
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+
+  rabbitmq2:
+    image: rabbitmq:3-management
+    container_name: rabbitmq2
+    hostname: rabbitmq2
+    networks:
+      mqtt_network:
+        aliases:
+          - rabbitmq
+      audit_network:
+        aliases:
+          - rabbitmq
+    environment:
+      - RABBITMQ_ERLANG_COOKIE=rabbitmqsecretcookie
+      - RABBITMQ_NODENAME=rabbit@rabbitmq2
+    volumes:
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+
+  rabbitmq3:
+    image: rabbitmq:3-management
+    container_name: rabbitmq3
+    hostname: rabbitmq3
+    networks:
+      mqtt_network:
+        aliases:
+          - rabbitmq
+      audit_network:
+        aliases:
+          - rabbitmq
+    environment:
+      - RABBITMQ_ERLANG_COOKIE=rabbitmqsecretcookie
+      - RABBITMQ_NODENAME=rabbit@rabbitmq3
+    volumes:
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+
+  centralcontroller:
+    build:
+      context: ./src/CentralController
+      dockerfile: Dockerfile
+    container_name: centralcontroller
+    networks:
+      - controller_network
+    environment:
+      - EMQX_API_URL=http://nginx:18083
+      - EMQX_API_KEY=adminkey
+      - EMQX_API_SECRET=adminsecret
+      - ASPNETCORE_URLS=http://+:80
+    volumes:
+      - ./downloads:/app/wwwroot/ota
+
+  iotdevice1:
+    build:
+      context: ./src/IoTDevice
+      dockerfile: Dockerfile
+    container_name: iotdevice1
+    networks:
+      - iot_network
+    environment:
+      - DEVICE_ID=device-1
+      - MQTT_HOST=nginx
+      - OTA_URL=http://nginx/ota/firmware-v1.2.0.bin
+    volumes:
+      - ./downloads/device-1:/app/downloads
+    depends_on:
+      - nginx1
+      - nginx2
+
+  iotdevice2:
+    build:
+      context: ./src/IoTDevice
+      dockerfile: Dockerfile
+    container_name: iotdevice2
+    networks:
+      - iot_network
+    environment:
+      - DEVICE_ID=device-2
+      - MQTT_HOST=nginx
+      - OTA_URL=http://nginx/ota/firmware-v1.2.0.bin
+    volumes:
+      - ./downloads/device-2:/app/downloads
+    depends_on:
+      - nginx1
+      - nginx2
+
+  iotdevice3:
+    build:
+      context: ./src/IoTDevice
+      dockerfile: Dockerfile
+    container_name: iotdevice3
+    networks:
+      - iot_network
+    environment:
+      - DEVICE_ID=device-3
+      - MQTT_HOST=nginx
+      - OTA_URL=http://nginx/ota/firmware-v1.2.0.bin
+    volumes:
+      - ./downloads/device-3:/app/downloads
+    depends_on:
+      - nginx1
+      - nginx2
+
+  auditworker1:
+    build:
+      context: ./src/AuditWorker
+      dockerfile: Dockerfile
+    container_name: auditworker1
+    networks:
+      - audit_network
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - rabbitmq1
+      - rabbitmq2
+      - rabbitmq3
+
+  auditworker2:
+    build:
+      context: ./src/AuditWorker
+      dockerfile: Dockerfile
+    container_name: auditworker2
+    networks:
+      - audit_network
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - rabbitmq1
+      - rabbitmq2
+      - rabbitmq3
+
+  vector:
+    image: timberio/vector:0.38.0-debian
+    container_name: vector
+    command: ["--config", "/etc/vector/vector.toml"]
+    networks:
+      - audit_network
+      - observability_network
+    volumes:
+      - ./vector/vector.toml:/etc/vector/vector.toml:ro
+    depends_on:
+      - rabbitmq1
+      - rabbitmq2
+      - rabbitmq3
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: loki
+    networks:
+      - observability_network
+    ports:
+      - "3100:3100" # Expose Loki to host for testing/verification
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    networks:
+      - observability_network
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090" # Expose Prometheus to host for testing/verification
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    networks:
+      - observability_network
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      - loki
+      - prometheus
