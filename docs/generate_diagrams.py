@@ -7,7 +7,7 @@ graph TD
         Port3000["Port 3000 (Grafana UI)"]
         Port18083["Port 18083 (nginx1 EMQX Dashboard)"]
         Port18084["Port 18084 (nginx2 EMQX Dashboard)"]
-        VolAudit[("Volume: ./data/audit.db")]
+        VolData[("Volume: ./data/ (SQLite databases)")]
         VolDownloads[("Volume: ./downloads/")]
     end
 
@@ -62,6 +62,7 @@ graph TD
     EMQX1 & EMQX2 <-->|mqtt_network| RabbitMQ1 & RabbitMQ2 & RabbitMQ3
     RabbitMQ1 & RabbitMQ2 & RabbitMQ3 <-->|audit_network| Worker1 & Worker2
     RabbitMQ1 & RabbitMQ2 & RabbitMQ3 <-->|audit_network| Vector
+    RabbitMQ1 & RabbitMQ2 & RabbitMQ3 <-->|audit_network| Controller
 
     %% Network Connections for Vector
     Vector <-->|observability_network| Loki & Prometheus
@@ -73,7 +74,8 @@ graph TD
     Port3000 <--> Grafana
     Port18083 <--> Nginx1
     Port18084 <--> Nginx2
-    Worker1 & Worker2 -->|Mount| VolAudit
+    Worker1 & Worker2 -->|Mount| VolData
+    Controller -->|Mount| VolData
     Device1 & Device2 & Device3 -->|Mount| VolDownloads
 
     style Nginx1 fill:#f9f,stroke:#333
@@ -103,11 +105,13 @@ graph TD
 
     subgraph ControlZone ["Control Zone"]
         Controller["Central Controller"]
+        ControllerDB[("SQLite controller.db")]
     end
 
     subgraph AuditZone ["Audit/Backend Zone"]
         Worker["Audit Workers 1, 2"]
-        DB[("SQLite audit.db")]
+        AuditDB[("SQLite audit.db")]
+        PeripheralDB[("SQLite peripheral.db")]
     end
 
     subgraph ObsPipeline ["Observability Pipeline"]
@@ -122,8 +126,12 @@ graph TD
     Nginx -->|2. Load Balance TCP| EMQX
     EMQX -->|3. Data Bridge| Rabbit
     Rabbit -->|4a. Consume Logs/Telemetry/Metrics| Vector
-    Rabbit -->|4b. Consume Audit Events| Worker
-    Worker -->|5. Persist| DB
+    Rabbit -->|4b. Consume Audit & Status Events| Worker
+    Rabbit -->|4c. Consume Peripheral Status| Worker
+    Rabbit -->|4d. Consume Status & Command Feedback| Controller
+    Worker -->|5a. Persist Audit/Status| AuditDB
+    Worker -->|5b. Persist Peripherals| PeripheralDB
+    Controller -->|5c. Persist Status/Feedback| ControllerDB
 
     %% Vector Routing
     Vector -->|6a. Send Logs & Raw JSON Payloads| Loki
