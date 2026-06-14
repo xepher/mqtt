@@ -1,28 +1,28 @@
-using System;
-using System.IO;
-using System.Text;
-using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using System.Text;
+using System.Text.Json;
 
 namespace AuditWorker
 {
     public class AuditLogWorker : BackgroundService
     {
         private readonly ILogger<AuditLogWorker> _logger;
+        private readonly IConfiguration _configuration;
         private readonly string _workerName;
         private readonly string _rabbitmqHost;
 
-        public AuditLogWorker(ILogger<AuditLogWorker> logger)
+        public AuditLogWorker(ILogger<AuditLogWorker> logger, IConfiguration configuration)
         {
             _logger = logger;
-            _workerName = Environment.GetEnvironmentVariable("HOSTNAME") ?? $"worker-{Guid.NewGuid().ToString().Substring(0, 6)}";
-            _rabbitmqHost = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? "localhost";
+            _configuration = configuration;
+            var hostname = _configuration["HOSTNAME"];
+            _workerName = !string.IsNullOrEmpty(hostname) ? hostname : $"worker-{Guid.NewGuid().ToString().Substring(0, 6)}";
+            _rabbitmqHost = _configuration["RABBITMQ_HOST"] ?? "localhost";
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -33,6 +33,8 @@ namespace AuditWorker
             try
             {
                 Directory.CreateDirectory("data");
+                
+                // Initialize Audit database
                 using (var db = new AuditContext())
                 {
                     try
@@ -41,10 +43,10 @@ namespace AuditWorker
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning($"Database creation skipped or failed (likely due to concurrent worker startup): {ex.Message}");
+                        _logger.LogWarning($"Audit Database creation skipped or failed (likely due to concurrent worker startup): {ex.Message}");
                     }
                     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;", stoppingToken);
-                    _logger.LogInformation("SQLite database initialized in WAL mode successfully.");
+                    _logger.LogInformation("Audit SQLite database initialized in WAL mode successfully.");
                 }
             }
             catch (Exception ex)
@@ -96,93 +98,125 @@ namespace AuditWorker
                 {
                     var body = ea.Body.ToArray();
                     var jsonStr = Encoding.UTF8.GetString(body);
-                    _logger.LogInformation($"Received audit log message: {jsonStr}");
+                    
+                    bool isStatus = ea.RoutingKey.EndsWith("status.up");
 
-                    using var document = JsonDocument.Parse(jsonStr);
-                    var root = document.RootElement;
-
-                    string deviceId = null;
-                    string user = null;
-                    string action = null;
-                    string result = null;
-                    DateTime timestamp = DateTime.UtcNow;
-
-                    if (root.TryGetProperty("payload", out var payloadProp))
+                    if (isStatus)
                     {
-                        try
+                        _logger.LogInformation($"Received status message: {jsonStr}");
+                        
+                        var parts = ea.RoutingKey.Split('.');
+                        string deviceId = parts.Length >= 3 ? parts[2] : "unknown";
+                        string statusValue = jsonStr.Trim('\"', ' ', '\n', '\r');
+
+                        var logEntry = new AuditLog
                         {
-                            string rawPayload = null;
-                            if (payloadProp.ValueKind == JsonValueKind.String)
-                            {
-                                rawPayload = payloadProp.GetString();
-                            }
-                            else if (payloadProp.ValueKind == JsonValueKind.Object)
-                            {
-                                rawPayload = payloadProp.GetRawText();
-                            }
+                            DeviceId = deviceId,
+                            User = "system",
+                            Action = "connection_status_change",
+                            Result = statusValue,
+                            Timestamp = DateTime.UtcNow,
+                            WorkerName = _workerName
+                        };
 
-                            if (!string.IsNullOrEmpty(rawPayload))
-                            {
-                                using var innerDoc = JsonDocument.Parse(rawPayload);
-                                var innerRoot = innerDoc.RootElement;
+                        using (var db = new AuditContext())
+                        {
+                            db.AuditLogs.Add(logEntry);
+                            await db.SaveChangesAsync(stoppingToken);
+                            var count = await db.AuditLogs.CountAsync(stoppingToken);
+                            _logger.LogInformation($"Device connection status log persisted to SQLite (audit.db) by {_workerName}. Total count: {count}");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"Received audit log message: {jsonStr}");
 
-                                deviceId = innerRoot.TryGetProperty("device_id", out var devProp) ? devProp.GetString() : null;
-                                user = innerRoot.TryGetProperty("user", out var usrProp) ? usrProp.GetString() : null;
-                                action = innerRoot.TryGetProperty("action", out var actProp) ? actProp.GetString() : null;
-                                result = innerRoot.TryGetProperty("result", out var resProp) ? resProp.GetString() : null;
-                                
-                                if (innerRoot.TryGetProperty("timestamp", out var tsProp))
+                        using var document = JsonDocument.Parse(jsonStr);
+                        var root = document.RootElement;
+
+                        string? deviceId = null;
+                        string? user = null;
+                        string? action = null;
+                        string? result = null;
+                        DateTime timestamp = DateTime.UtcNow;
+
+                        if (root.TryGetProperty("payload", out var payloadProp))
+                        {
+                            try
+                            {
+                                string? rawPayload = null;
+                                if (payloadProp.ValueKind == JsonValueKind.String)
                                 {
-                                    if (tsProp.ValueKind == JsonValueKind.String && DateTime.TryParse(tsProp.GetString(), out var ts))
+                                    rawPayload = payloadProp.GetString();
+                                }
+                                else if (payloadProp.ValueKind == JsonValueKind.Object)
+                                {
+                                    rawPayload = payloadProp.GetRawText();
+                                }
+
+                                if (!string.IsNullOrEmpty(rawPayload))
+                                {
+                                    using var innerDoc = JsonDocument.Parse(rawPayload);
+                                    var innerRoot = innerDoc.RootElement;
+
+                                    deviceId = innerRoot.TryGetProperty("device_id", out var devProp) ? devProp.GetString() : null;
+                                    user = innerRoot.TryGetProperty("user", out var usrProp) ? usrProp.GetString() : null;
+                                    action = innerRoot.TryGetProperty("action", out var actProp) ? actProp.GetString() : null;
+                                    result = innerRoot.TryGetProperty("result", out var resProp) ? resProp.GetString() : null;
+                                    
+                                    if (innerRoot.TryGetProperty("timestamp", out var tsProp))
                                     {
-                                        timestamp = ts;
+                                        if (tsProp.ValueKind == JsonValueKind.String && DateTime.TryParse(tsProp.GetString(), out var ts))
+                                        {
+                                            timestamp = ts;
+                                        }
                                     }
                                 }
                             }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning($"Failed to parse inner payload: {ex.Message}");
+                            }
                         }
-                        catch (Exception ex)
+
+                        // Fallback to root properties if payload parsing didn't work or if properties are at root
+                        if (string.IsNullOrEmpty(deviceId))
+                            deviceId = root.TryGetProperty("device_id", out var rootDevProp) && rootDevProp.ValueKind == JsonValueKind.String ? rootDevProp.GetString() : null;
+                        if (string.IsNullOrEmpty(user))
+                            user = root.TryGetProperty("user", out var rootUsrProp) && rootUsrProp.ValueKind == JsonValueKind.String ? rootUsrProp.GetString() : null;
+                        if (string.IsNullOrEmpty(action))
+                            action = root.TryGetProperty("action", out var rootActProp) && rootActProp.ValueKind == JsonValueKind.String ? rootActProp.GetString() : null;
+                        if (string.IsNullOrEmpty(result))
+                            result = root.TryGetProperty("result", out var rootResProp) && rootResProp.ValueKind == JsonValueKind.String ? rootResProp.GetString() : null;
+
+                        var logEntry = new AuditLog
                         {
-                            _logger.LogWarning($"Failed to parse inner payload: {ex.Message}");
+                            DeviceId = deviceId,
+                            User = user,
+                            Action = action,
+                            Result = result,
+                            Timestamp = timestamp,
+                            WorkerName = _workerName
+                        };
+
+                        using (var db = new AuditContext())
+                        {
+                            db.AuditLogs.Add(logEntry);
+                            int saved = await db.SaveChangesAsync(stoppingToken);
+                            _logger.LogInformation($"db.SaveChangesAsync returned: {saved}");
+                            
+                            var count = await db.AuditLogs.CountAsync(stoppingToken);
+                            _logger.LogInformation($"Current count inside worker context: {count}");
                         }
+
+                        _logger.LogInformation($"Audit log persisted to SQLite (audit.db) by {_workerName}.");
                     }
-
-                    // Fallback to root properties if payload parsing didn't work or if properties are at root
-                    if (string.IsNullOrEmpty(deviceId))
-                        deviceId = root.TryGetProperty("device_id", out var rootDevProp) && rootDevProp.ValueKind == JsonValueKind.String ? rootDevProp.GetString() : null;
-                    if (string.IsNullOrEmpty(user))
-                        user = root.TryGetProperty("user", out var rootUsrProp) && rootUsrProp.ValueKind == JsonValueKind.String ? rootUsrProp.GetString() : null;
-                    if (string.IsNullOrEmpty(action))
-                        action = root.TryGetProperty("action", out var rootActProp) && rootActProp.ValueKind == JsonValueKind.String ? rootActProp.GetString() : null;
-                    if (string.IsNullOrEmpty(result))
-                        result = root.TryGetProperty("result", out var rootResProp) && rootResProp.ValueKind == JsonValueKind.String ? rootResProp.GetString() : null;
-
-                    var logEntry = new AuditLog
-                    {
-                        DeviceId = deviceId,
-                        User = user,
-                        Action = action,
-                        Result = result,
-                        Timestamp = timestamp,
-                        WorkerName = _workerName
-                    };
-
-                    using (var db = new AuditContext())
-                    {
-                        db.AuditLogs.Add(logEntry);
-                        int saved = await db.SaveChangesAsync(stoppingToken);
-                        _logger.LogInformation($"db.SaveChangesAsync returned: {saved}");
-                        
-                        var count = await db.AuditLogs.CountAsync(stoppingToken);
-                        _logger.LogInformation($"Current count inside worker context: {count}");
-                    }
-
-                    _logger.LogInformation($"Audit log persisted to SQLite by {_workerName}.");
 
                     await channel.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false, cancellationToken: CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error processing or persisting audit log. Re-queuing...");
+                    _logger.LogError(ex, "Error processing or persisting message. Re-queuing...");
                     try
                     {
                         await channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: CancellationToken.None);

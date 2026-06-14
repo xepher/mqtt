@@ -9,6 +9,7 @@ namespace AuditWorker
         {
             var builder = Host.CreateApplicationBuilder(args);
             builder.Services.AddHostedService<AuditLogWorker>();
+            builder.Services.AddHostedService<PeripheralStatusWorker>();
             
             var app = builder.Build();
             app.Run();
