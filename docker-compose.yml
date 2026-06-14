@@ -163,13 +163,16 @@ services:
     container_name: centralcontroller
     networks:
       - controller_network
+      - audit_network
     environment:
       - EMQX_API_URL=http://nginx:18083
       - EMQX_API_KEY=adminkey
       - EMQX_API_SECRET=adminsecret
+      - RABBITMQ_HOST=rabbitmq
       - ASPNETCORE_URLS=http://+:80
     volumes:
       - ./downloads:/app/wwwroot/ota
+      - ./data:/app/data
 
   iotdevice1:
     build:
