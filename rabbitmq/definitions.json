@@ -31,6 +31,15 @@
       }
     },
     {
+      "name": "peripheral_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
       "name": "vector_logs_queue",
       "vhost": "/",
       "durable": true,
@@ -56,6 +65,24 @@
       "arguments": {
         "x-queue-type": "classic"
       }
+    },
+    {
+      "name": "controller_status_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "controller_feedback_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
     }
   ],
   "bindings": [
@@ -65,6 +92,22 @@
       "destination": "audit_queue",
       "destination_type": "queue",
       "routing_key": "mqttsystem.org1.*.audit.up",
+      "arguments": {}
+    },
+    {
+      "source": "amq.topic",
+      "vhost": "/",
+      "destination": "audit_queue",
+      "destination_type": "queue",
+      "routing_key": "mqttsystem.org1.*.status.up",
+      "arguments": {}
+    },
+    {
+      "source": "amq.topic",
+      "vhost": "/",
+      "destination": "peripheral_queue",
+      "destination_type": "queue",
+      "routing_key": "mqttsystem.org1.*.peripheral.up",
       "arguments": {}
     },
     {
@@ -89,6 +132,38 @@
       "destination": "vector_telemetry_queue",
       "destination_type": "queue",
       "routing_key": "mqttsystem.org1.*.telemetry.up",
+      "arguments": {}
+    },
+    {
+      "source": "amq.topic",
+      "vhost": "/",
+      "destination": "controller_status_queue",
+      "destination_type": "queue",
+      "routing_key": "mqttsystem.org1.*.status.up",
+      "arguments": {}
+    },
+    {
+      "source": "amq.topic",
+      "vhost": "/",
+      "destination": "controller_feedback_queue",
+      "destination_type": "queue",
+      "routing_key": "mqttsystem.org1.*.config.up",
+      "arguments": {}
+    },
+    {
+      "source": "amq.topic",
+      "vhost": "/",
+      "destination": "controller_feedback_queue",
+      "destination_type": "queue",
+      "routing_key": "mqttsystem.org1.*.control.up",
+      "arguments": {}
+    },
+    {
+      "source": "amq.topic",
+      "vhost": "/",
+      "destination": "controller_feedback_queue",
+      "destination_type": "queue",
+      "routing_key": "mqttsystem.org1.*.ota.up",
       "arguments": {}
     }
   ]
